@@ -47,7 +47,7 @@
      * SETTINGS (MORE PARTICLES)
      ***********************/
     // If your PC lags, reduce this to 12000 or 9000.
-    const PARTICLE_COUNT = 12000;
+    const PARTICLE_COUNT = 9000;
 
     // Stronger 3D feel settings
     const STARFIELD_COUNT = 2500; // background depth stars
@@ -71,7 +71,7 @@
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setSize(innerWidth, innerHeight);
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
     document.body.appendChild(renderer.domElement);
 
     // subtle lights (mostly for the fog ambience)
@@ -662,4 +662,5 @@
   </script>
 </body>
 </html>
+
 
