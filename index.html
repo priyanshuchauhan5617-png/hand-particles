@@ -1,408 +1,541 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Hand Gesture 3D Particles (Three.js + MediaPipe)</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Hand Gestures → Particle Templates (Three.js + MediaPipe)</title>
   <style>
-    html,body{margin:0;height:100%;overflow:hidden;background:#000}
-    #hud{
-      position:fixed;left:12px;top:12px;z-index:10;
-      font-family:system-ui,Segoe UI,Arial;color:#fff;
-      background:rgba(0,0,0,.5);padding:10px 12px;border-radius:12px;
-      max-width:420px;line-height:1.3
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: system-ui, Arial; }
+    #ui {
+      position: fixed; top: 12px; left: 12px; z-index: 10;
+      color: #fff; background: rgba(0,0,0,.55); padding: 10px 12px; border-radius: 12px;
+      backdrop-filter: blur(8px); max-width: 360px;
     }
-    #hud b{color:#9cf}
-    #start{
-      margin-top:8px;border:none;border-radius:10px;
-      background:#1a5cff;color:#fff;padding:8px 10px;cursor:pointer
+    #ui button {
+      border: 0; padding: 8px 10px; border-radius: 10px; cursor: pointer;
+      margin-right: 8px; margin-top: 8px;
     }
-    #cam{
-      position:fixed;right:12px;bottom:12px;width:200px;
-      opacity:.12;transform:scaleX(-1);
-      border-radius:10px;border:1px solid rgba(255,255,255,.15);
-      z-index:2
+    #status { font-size: 13px; opacity: .9; margin-top: 6px; line-height: 1.35; }
+    #debug { font-size: 12px; opacity: .85; margin-top: 6px; white-space: pre-wrap; }
+    #video {
+      position: fixed; right: 12px; bottom: 12px; width: 220px; height: 165px;
+      transform: scaleX(-1);
+      border-radius: 14px; opacity: 0.18; z-index: 9; object-fit: cover;
+      border: 1px solid rgba(255,255,255,0.12);
     }
+    canvas { display: block; }
   </style>
 </head>
 <body>
-  <div id="hud">
-    <div><b>Gestures</b></div>
-    <div>🤏 <b>Pinch</b> (thumb+index): expand / contract</div>
-    <div>✋ <b>Open palm</b>: switch template</div>
-    <div>✊ <b>Fist</b>: fireworks burst</div>
-    <div>↔️ <b>Hand rotate</b>: color shift</div>
-    <button id="start">Start Camera</button>
-    <div id="status" style="margin-top:8px;opacity:.9"></div>
+  <div id="ui">
+    <div><b>Hand Gestures → Particle Templates</b></div>
+    <button id="startBtn">Start Camera</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <div id="status">Not started.</div>
+    <div id="debug"></div>
   </div>
 
-  <video id="cam" playsinline muted></video>
+  <video id="video" playsinline></video>
 
-  <!-- Three.js (non-module) -->
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <!-- Three.js -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
 
-  <!-- MediaPipe Hands (non-module) -->
+  <!-- MediaPipe Hands (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.min.js"></script>
 
   <script>
-    // -------------------------
-    // Helpers
-    // -------------------------
-    const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-    const lerp=(a,b,t)=>a+(b-a)*t;
-    function dist2(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
+    /***********************
+     * THREE.JS SETUP
+     ***********************/
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x000000, 0.07);
 
-    const statusEl=document.getElementById("status");
-    const setStatus=(t)=>statusEl.textContent=t;
+    const camera3D = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 1000);
+    camera3D.position.set(0, 0.5, 9);
 
-    // -------------------------
-    // Three.js Scene
-    // -------------------------
-    const renderer=new THREE.WebGLRenderer({antialias:true});
-    renderer.setSize(innerWidth,innerHeight);
-    renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     document.body.appendChild(renderer.domElement);
 
-    const scene=new THREE.Scene();
-    scene.fog=new THREE.Fog(0x000000, 6, 30);
+    // Lights (subtle)
+    const light = new THREE.DirectionalLight(0xffffff, 0.35);
+    light.position.set(2, 4, 5);
+    scene.add(light);
 
-    const camera3=new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.01, 200);
-    camera3.position.set(0,1.2,7.5);
+    /***********************
+     * PARTICLES
+     ***********************/
+    const particleCount = 7000;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const colors = new Float32Array(particleCount * 3);
+    const velocities = new Float32Array(particleCount * 3);
 
-    scene.add(new THREE.AmbientLight(0xffffff,0.25));
-    const dl=new THREE.DirectionalLight(0xffffff,0.35);
-    dl.position.set(2,6,2);
-    scene.add(dl);
+    // Targets (template points)
+    const targets = new Float32Array(particleCount * 3);
 
-    // -------------------------
-    // Particles
-    // -------------------------
-    const N=16000;
-    const geom=new THREE.BufferGeometry();
-    const positions=new Float32Array(N*3);
-    const colors=new Float32Array(N*3);
-    const target=new Float32Array(N*3);
-    const vel=new Float32Array(N*3);
+    // Initialize random positions and colors
+    const tmpColor = new THREE.Color();
+    for (let i = 0; i < particleCount; i++) {
+      const ix = i * 3;
+      positions[ix + 0] = (Math.random() - 0.5) * 6;
+      positions[ix + 1] = (Math.random() - 0.5) * 6;
+      positions[ix + 2] = (Math.random() - 0.5) * 6;
 
-    geom.setAttribute("position", new THREE.BufferAttribute(positions,3));
-    geom.setAttribute("color", new THREE.BufferAttribute(colors,3));
+      velocities[ix + 0] = (Math.random() - 0.5) * 0.02;
+      velocities[ix + 1] = (Math.random() - 0.5) * 0.02;
+      velocities[ix + 2] = (Math.random() - 0.5) * 0.02;
 
-    const mat=new THREE.PointsMaterial({
-      size:0.05,
-      vertexColors:true,
-      transparent:true,
-      blending:THREE.AdditiveBlending,
-      depthWrite:false,
-      opacity:0.95
+      tmpColor.setHSL(Math.random(), 1.0, 0.6);
+      colors[ix + 0] = tmpColor.r;
+      colors[ix + 1] = tmpColor.g;
+      colors[ix + 2] = tmpColor.b;
+    }
+
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
+    const material = new THREE.PointsMaterial({
+      size: 0.03,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
     });
 
-    const pts=new THREE.Points(geom,mat);
-    scene.add(pts);
+    const points = new THREE.Points(geometry, material);
+    scene.add(points);
 
-    // -------------------------
-    // Templates
-    // -------------------------
-    const templates=["heart","flower","saturn","fireworks"];
-    let templateIndex=0;
+    // Parameters controlled by gestures
+    let attraction = 0.06;   // pull particles toward targets
+    let jitter = 0.01;       // random motion
+    let spread = 1.0;        // how "wide" template is
+    let hueShift = 0.0;      // global color shift
+    let explode = 0.0;       // fireworks burst strength
+    let currentTemplate = "hearts";
 
-    function fillHeart(){
-      for(let i=0;i<N;i++){
-        const t=Math.random()*Math.PI*2;
-        let x=16*Math.pow(Math.sin(t),3);
-        let y=13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t);
-        x/=18; y/=18;
-        const s=Math.sqrt(Math.random());
-        const z=(Math.random()-0.5)*0.6*(1-s);
-        target[i*3+0]=x*s*2.2;
-        target[i*3+1]=y*s*2.2+0.2;
-        target[i*3+2]=z;
+    function setStatus(text) {
+      document.getElementById("status").textContent = text;
+    }
+
+    function setDebug(text) {
+      document.getElementById("debug").textContent = text;
+    }
+
+    /***********************
+     * TEMPLATE POINT FUNCTIONS
+     ***********************/
+    function heartPoint(i, N) {
+      // Classic 2D heart curve extruded a bit
+      const t = (i / N) * Math.PI * 2;
+      const x = 16 * Math.pow(Math.sin(t), 3);
+      const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+      // normalize & scale
+      return { x: (x / 18) * 2.2, y: (y / 18) * 2.2, z: (Math.random() - 0.5) * 0.35 };
+    }
+
+    function saturnPoint(i, N) {
+      // Sphere + ring blend
+      const t = i / N;
+      const ringRatio = 0.55;
+      const pickRing = (Math.random() < ringRatio);
+
+      if (pickRing) {
+        const a = Math.random() * Math.PI * 2;
+        const r = 2.2 + (Math.random() - 0.5) * 0.35;
+        const tilt = 0.35;
+        const x = Math.cos(a) * r;
+        const z = Math.sin(a) * r;
+        const y = (Math.sin(a) * r) * tilt * 0.15;
+        return { x, y, z };
+      } else {
+        // planet sphere
+        const u = Math.random();
+        const v = Math.random();
+        const theta = 2 * Math.PI * u;
+        const phi = Math.acos(2*v - 1);
+        const r = 1.0 + (Math.random() - 0.5) * 0.15;
+        return {
+          x: r * Math.sin(phi) * Math.cos(theta),
+          y: r * Math.cos(phi),
+          z: r * Math.sin(phi) * Math.sin(theta),
+        };
       }
     }
 
-    function fillFlower(){
-      for(let i=0;i<N;i++){
-        const u=Math.random()*Math.PI*2;
-        const v=Math.random();
-        const petals=6;
-        const rPetal=1.2+0.55*Math.sin(petals*u)*(0.5+0.5*Math.cos(Math.PI*v));
-        const r=rPetal*(0.15+0.85*Math.pow(v,0.75));
-        const x=r*Math.cos(u);
-        const z=r*Math.sin(u);
-        const y=1.35*(1-v)*(0.2+0.8*Math.cos(u*0.5))-0.3;
-        const th=(Math.random()-0.5)*0.35*(1-v);
-        target[i*3+0]=x*2.0;
-        target[i*3+1]=y+th*0.35;
-        target[i*3+2]=z*2.0;
+    function flowerPoint(i, N) {
+      // Polar rose: r = cos(kθ)
+      const k = 5;
+      const t = (i / N) * Math.PI * 2;
+      const r = Math.cos(k * t);
+      const x = r * Math.cos(t) * 2.6;
+      const y = r * Math.sin(t) * 2.6;
+      const z = (Math.random() - 0.5) * 0.45;
+      return { x, y, z };
+    }
+
+    function fireworksPoint(i, N) {
+      // A sphere shell (burst)
+      const u = Math.random();
+      const v = Math.random();
+      const theta = 2 * Math.PI * u;
+      const phi = Math.acos(2*v - 1);
+      const r = 2.8 + (Math.random() - 0.5) * 0.2;
+      return {
+        x: r * Math.sin(phi) * Math.cos(theta),
+        y: r * Math.cos(phi),
+        z: r * Math.sin(phi) * Math.sin(theta),
+      };
+    }
+
+    function galaxyPoint(i, N) {
+      // Spiral galaxy
+      const t = i / N;
+      const turns = 7;
+      const angle = t * Math.PI * 2 * turns;
+      const radius = 0.2 + 3.0 * Math.sqrt(t);
+      const y = (Math.random() - 0.5) * 0.7 * (1.0 - t);
+      // add arm noise
+      const arm = (Math.random() - 0.5) * 0.25;
+      return {
+        x: Math.cos(angle + arm) * radius,
+        y,
+        z: Math.sin(angle + arm) * radius,
+      };
+    }
+
+    function spiralPoint(i, N) {
+      // Helix spiral
+      const t = i / N;
+      const angle = t * Math.PI * 2 * 10;
+      const radius = 0.5 + 2.2 * t;
+      const y = (t - 0.5) * 4.0;
+      return {
+        x: Math.cos(angle) * radius,
+        y,
+        z: Math.sin(angle) * radius,
+      };
+    }
+
+    const templates = {
+      hearts: heartPoint,
+      saturn: saturnPoint,
+      flower: flowerPoint,
+      fireworks: fireworksPoint,
+      galaxy: galaxyPoint,
+      spiral: spiralPoint,
+    };
+
+    function rebuildTargets(templateName) {
+      const fn = templates[templateName] || templates.hearts;
+      for (let i = 0; i < particleCount; i++) {
+        const p = fn(i, particleCount);
+        const ix = i * 3;
+        targets[ix + 0] = p.x * spread;
+        targets[ix + 1] = p.y * spread;
+        targets[ix + 2] = p.z * spread;
       }
     }
 
-    function fillSaturn(){
-      const ringCount=Math.floor(N*0.68);
-      const tilt=0.45;
-      for(let i=0;i<ringCount;i++){
-        const ang=Math.random()*Math.PI*2;
-        const rr=lerp(1.9,3.1,Math.sqrt(Math.random()));
-        const x=rr*Math.cos(ang);
-        const z=rr*Math.sin(ang);
-        const y=(Math.random()-0.5)*0.08;
-        const yt=y*Math.cos(tilt)-z*Math.sin(tilt);
-        const zt=y*Math.sin(tilt)+z*Math.cos(tilt);
-        target[i*3+0]=x;
-        target[i*3+1]=yt;
-        target[i*3+2]=zt;
+    function setTemplate(name) {
+      if (!templates[name]) return;
+      currentTemplate = name;
+      rebuildTargets(name);
+      setStatus(`Template: ${name}`);
+    }
+
+    // init default target shape
+    rebuildTargets(currentTemplate);
+
+    /***********************
+     * ANIMATION LOOP
+     ***********************/
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.033);
+
+      // slow scene rotation for nice look
+      points.rotation.y += dt * 0.12;
+      points.rotation.x += dt * 0.05;
+
+      // update particles toward targets
+      for (let i = 0; i < particleCount; i++) {
+        const ix = i * 3;
+
+        // attraction to targets
+        const tx = targets[ix + 0];
+        const ty = targets[ix + 1];
+        const tz = targets[ix + 2];
+
+        const px = positions[ix + 0];
+        const py = positions[ix + 1];
+        const pz = positions[ix + 2];
+
+        const ax = (tx - px) * attraction;
+        const ay = (ty - py) * attraction;
+        const az = (tz - pz) * attraction;
+
+        // velocity integrates
+        velocities[ix + 0] += ax * dt * 60;
+        velocities[ix + 1] += ay * dt * 60;
+        velocities[ix + 2] += az * dt * 60;
+
+        // jitter
+        velocities[ix + 0] += (Math.random() - 0.5) * jitter;
+        velocities[ix + 1] += (Math.random() - 0.5) * jitter;
+        velocities[ix + 2] += (Math.random() - 0.5) * jitter;
+
+        // fireworks burst pulse
+        if (explode > 0.001) {
+          velocities[ix + 0] += (px) * explode * 0.002;
+          velocities[ix + 1] += (py) * explode * 0.002;
+          velocities[ix + 2] += (pz) * explode * 0.002;
+        }
+
+        // damping
+        velocities[ix + 0] *= 0.92;
+        velocities[ix + 1] *= 0.92;
+        velocities[ix + 2] *= 0.92;
+
+        positions[ix + 0] += velocities[ix + 0];
+        positions[ix + 1] += velocities[ix + 1];
+        positions[ix + 2] += velocities[ix + 2];
+
+        // color shift (gentle)
+        const cix = ix;
+        // adjust hue over time (approx: rotate RGB a tiny bit by lerp)
+        // We'll keep it simple: modulate brightness slightly with hueShift
+        const brighten = 0.6 + 0.4 * Math.sin((i * 0.0008) + hueShift);
+        colors[cix + 0] = Math.min(1, colors[cix + 0] * 0.98 + brighten * 0.02);
+        colors[cix + 1] = Math.min(1, colors[cix + 1] * 0.98 + brighten * 0.02);
+        colors[cix + 2] = Math.min(1, colors[cix + 2] * 0.98 + brighten * 0.02);
       }
-      for(let i=ringCount;i<N;i++){
-        const a=Math.random()*Math.PI*2;
-        const b=Math.acos(lerp(-1,1,Math.random()));
-        const r=1.05*Math.cbrt(Math.random());
-        target[i*3+0]=r*Math.sin(b)*Math.cos(a);
-        target[i*3+1]=r*Math.cos(b)+0.1;
-        target[i*3+2]=r*Math.sin(b)*Math.sin(a);
+
+      explode *= 0.93;
+
+      geometry.attributes.position.needsUpdate = true;
+      geometry.attributes.color.needsUpdate = true;
+
+      renderer.render(scene, camera3D);
+    }
+
+    animate();
+
+    window.addEventListener("resize", () => {
+      camera3D.aspect = window.innerWidth / window.innerHeight;
+      camera3D.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    /***********************
+     * MEDIAPIPE HANDS + GESTURES
+     ***********************/
+    const videoEl = document.getElementById("video");
+    let cam = null;
+
+    // Gesture mapping -> templates
+    const gestureToTemplate = {
+      PALM: "galaxy",
+      FIST: "fireworks",
+      ONE: "saturn",
+      V: "flower",
+      ROCK: "hearts",
+      PINCH: "spiral",
+    };
+
+    // Cooldown + stability
+    let lastSwitchTime = 0;
+    const SWITCH_COOLDOWN_MS = 650;
+
+    let gestureHistory = [];
+    const HISTORY = 7;
+
+    function dist2D(a, b) {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return Math.sqrt(dx*dx + dy*dy);
+    }
+
+    function fingerUp(lm, tip, pip) {
+      // For many webcams: smaller y means higher on screen => finger up
+      return lm[tip].y < lm[pip].y;
+    }
+
+    function thumbUpBasic(lm) {
+      // Basic rule: thumb tip farther from thumb MCP than a threshold
+      // (works okay without left/right detection)
+      return dist2D(lm[4], lm[2]) > 0.06;
+    }
+
+    function getFingerState(lm) {
+      const indexUp  = fingerUp(lm, 8, 6);
+      const middleUp = fingerUp(lm, 12, 10);
+      const ringUp   = fingerUp(lm, 16, 14);
+      const pinkyUp  = fingerUp(lm, 20, 18);
+      const tUp = thumbUpBasic(lm);
+      return { thumbUp: tUp, indexUp, middleUp, ringUp, pinkyUp };
+    }
+
+    function classifyGesture(lm) {
+      const f = getFingerState(lm);
+
+      const pinch = dist2D(lm[4], lm[8]) < 0.035; // thumb tip to index tip close
+      if (pinch) return "PINCH";
+
+      // FIST: all down
+      if (!f.thumbUp && !f.indexUp && !f.middleUp && !f.ringUp && !f.pinkyUp) return "FIST";
+
+      // PALM: all up
+      if (f.thumbUp && f.indexUp && f.middleUp && f.ringUp && f.pinkyUp) return "PALM";
+
+      // ONE: index only
+      if (!f.thumbUp && f.indexUp && !f.middleUp && !f.ringUp && !f.pinkyUp) return "ONE";
+
+      // V: index + middle
+      if (!f.thumbUp && f.indexUp && f.middleUp && !f.ringUp && !f.pinkyUp) return "V";
+
+      // ROCK: thumb + index + pinky
+      if (f.thumbUp && f.indexUp && !f.middleUp && !f.ringUp && f.pinkyUp) return "ROCK";
+
+      return "UNKNOWN";
+    }
+
+    function stableGesture(g) {
+      gestureHistory.push(g);
+      if (gestureHistory.length > HISTORY) gestureHistory.shift();
+
+      const counts = {};
+      for (const x of gestureHistory) counts[x] = (counts[x] || 0) + 1;
+
+      let best = "UNKNOWN";
+      let bestCount = 0;
+      for (const [k, v] of Object.entries(counts)) {
+        if (v > bestCount) { best = k; bestCount = v; }
+      }
+
+      // require at least 4/7 frames consistent
+      return bestCount >= 4 ? best : "UNKNOWN";
+    }
+
+    function applyGestureControls(gesture, lm) {
+      // Extra dynamics based on hand openness, pinch distance etc.
+      // Measure openness: average distance wrist->tips
+      const wrist = lm[0];
+      const tips = [lm[4], lm[8], lm[12], lm[16], lm[20]];
+      let avg = 0;
+      for (const t of tips) avg += dist2D(wrist, t);
+      avg /= tips.length;
+
+      // Map avg openness into spread
+      spread = 0.9 + (avg * 2.0); // usually 0.9..2.3 range
+      spread = Math.max(0.8, Math.min(spread, 2.7));
+
+      // jitter & attraction feel
+      attraction = 0.05 + (avg * 0.05);
+      attraction = Math.max(0.04, Math.min(attraction, 0.12));
+
+      jitter = 0.006 + (1.8 - spread) * 0.008;
+      jitter = Math.max(0.003, Math.min(jitter, 0.02));
+
+      // hue shift changes slowly while palm/v etc.
+      hueShift += 0.06;
+
+      // Fireworks: if FIST, pulse explode stronger
+      if (gesture === "FIST") {
+        explode = Math.min(1.0, explode + 0.08);
       }
     }
 
-    function fillFireworksRest(){
-      for(let i=0;i<N;i++){
-        const a=Math.random()*Math.PI*2;
-        const b=Math.acos(lerp(-1,1,Math.random()));
-        const r=0.9*Math.cbrt(Math.random());
-        target[i*3+0]=r*Math.sin(b)*Math.cos(a);
-        target[i*3+1]=r*Math.cos(b)+0.1;
-        target[i*3+2]=r*Math.sin(b)*Math.sin(a);
+    function maybeSwitchTemplate(gesture) {
+      const now = performance.now();
+      const next = gestureToTemplate[gesture];
+      if (!next) return;
+
+      if (now - lastSwitchTime < SWITCH_COOLDOWN_MS) return;
+
+      if (next !== currentTemplate) {
+        setTemplate(next);
+        lastSwitchTime = now;
       }
     }
 
-    function fireworksBurst(strength=1.0){
-      for(let i=0;i<N;i++){
-        const a=Math.random()*Math.PI*2;
-        const b=Math.acos(lerp(-1,1,Math.random()));
-        const s=lerp(0.6,2.4,Math.random())*strength;
-        vel[i*3+0]+=s*Math.sin(b)*Math.cos(a);
-        vel[i*3+1]+=s*Math.cos(b);
-        vel[i*3+2]+=s*Math.sin(b)*Math.sin(a);
-      }
-    }
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
 
-    function fillTemplate(name){
-      if(name==="heart") fillHeart();
-      else if(name==="flower") fillFlower();
-      else if(name==="saturn") fillSaturn();
-      else if(name==="fireworks") fillFireworksRest();
-      else fillHeart();
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
+    });
 
-      for(let i=0;i<N*3;i++){
-        positions[i]=target[i]+(Math.random()-0.5)*0.02;
-        vel[i]*=0.2;
-      }
-      geom.attributes.position.needsUpdate=true;
-    }
-
-    function switchTemplate(){
-      templateIndex=(templateIndex+1)%templates.length;
-      fillTemplate(templates[templateIndex]);
-      setStatus("Template: "+templates[templateIndex]);
-    }
-
-    fillTemplate(templates[templateIndex]);
-    setStatus("Ready. Click Start Camera.");
-
-    // -------------------------
-    // Color (HSL)
-    // -------------------------
-    let hue=0;
-    function updateColors(hShift){
-      for(let i=0;i<N;i++){
-        const x=positions[i*3+0], y=positions[i*3+1];
-        const h=(hShift + 0.08*y + 0.03*x) % 1;
-        const c=new THREE.Color();
-        c.setHSL(h<0?h+1:h, 1, 0.55);
-        colors[i*3+0]=c.r; colors[i*3+1]=c.g; colors[i*3+2]=c.b;
-      }
-      geom.attributes.color.needsUpdate=true;
-    }
-
-    // -------------------------
-    // MediaPipe Hands
-    // -------------------------
-    const video=document.getElementById("cam");
-    const startBtn=document.getElementById("start");
-
-    let hands=null;
-    let cam=null;
-
-    // hand state
-    let pinchSm=0, openSm=0, yawSm=0;
-    let expansion=1, expansionSm=1;
-    let latchOpen=false, latchFist=false;
-    let haveHand=false;
-    let handWorld=new THREE.Vector3(0,0,0);
-
-    function screenToWorld(x01,y01){
-      // mediapipe x/y in 0..1, video mirrored on screen
-      const x=(1-x01)*2-1;
-      const y=-(y01*2-1);
-      const v=new THREE.Vector3(x,y,0.2).unproject(camera3);
-      return v;
-    }
-
-    function computeSignals(lm){
-      const wrist=lm[0];
-      const thumb=lm[4];
-      const index=lm[8];
-      const middle=lm[12];
-      const ring=lm[16];
-      const pinky=lm[20];
-      const palm=lm[9];
-
-      const pinchD=dist2(thumb,index);
-      const pinch=1 - clamp((pinchD-0.02)/0.12, 0, 1);
-
-      const avgF=(dist2(index,wrist)+dist2(middle,wrist)+dist2(ring,wrist)+dist2(pinky,wrist))/4;
-      const openness=clamp((avgF-0.18)/0.22, 0, 1);
-
-      // simple yaw/rotate feel
-      const vIx=(index.x-wrist.x), vPx=(pinky.x-wrist.x);
-      const yaw=clamp((vIx - vPx)*0.9, -1, 1);
-
-      return { pinch, openness, yaw, palm };
-    }
-
-    function onResults(results){
-      if(!results.multiHandLandmarks || results.multiHandLandmarks.length===0){
-        haveHand=false;
+    hands.onResults((results) => {
+      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+        setDebug(`Gesture: (no hand)\nTemplate: ${currentTemplate}\nSpread: ${spread.toFixed(2)}  Attraction: ${attraction.toFixed(2)}  Jitter: ${jitter.toFixed(3)}`);
         return;
       }
-      haveHand=true;
-      const lm=results.multiHandLandmarks[0];
-      const sig=computeSignals(lm);
 
-      pinchSm=lerp(pinchSm, sig.pinch, 0.22);
-      openSm=lerp(openSm, sig.openness, 0.18);
-      yawSm=lerp(yawSm, sig.yaw, 0.15);
+      const lm = results.multiHandLandmarks[0];
 
-      // pinch -> expansion
-      const targetExp=lerp(0.75, 2.2, pinchSm);
-      expansionSm=lerp(expansionSm, targetExp, 0.12);
-      expansion=expansionSm;
+      const gRaw = classifyGesture(lm);
+      const g = stableGesture(gRaw);
 
-      // rotation -> hue shift
-      hue = (hue + yawSm*0.006) % 1;
+      applyGestureControls(g, lm);
+      if (g !== "UNKNOWN") maybeSwitchTemplate(g);
 
-      // open palm -> switch template (once)
-      const isOpen = openSm>0.78 && pinchSm<0.25;
-      if(isOpen && !latchOpen){ latchOpen=true; switchTemplate(); }
-      if(!isOpen) latchOpen=false;
+      setDebug(
+        `Gesture: ${g} (raw: ${gRaw})\n` +
+        `Template: ${currentTemplate}\n` +
+        `Spread: ${spread.toFixed(2)}  Attraction: ${attraction.toFixed(2)}  Jitter: ${jitter.toFixed(3)}\n` +
+        `Mappings: PALM→galaxy | FIST→fireworks | ONE→saturn | V→flower | ROCK→hearts | PINCH→spiral`
+      );
+    });
 
-      // fist -> burst (once)
-      const isFist = openSm<0.28;
-      if(isFist && !latchFist){ latchFist=true; fireworksBurst(1.0); }
-      if(!isFist) latchFist=false;
+    async function startCamera() {
+      setStatus("Starting camera...");
+      document.getElementById("startBtn").disabled = true;
 
-      // palm position -> attractor
-      handWorld.copy(screenToWorld(sig.palm.x, sig.palm.y));
-    }
-
-    async function startCamera(){
-      // Secure context check
-      if(!(location.protocol==="https:" || location.hostname==="localhost" || location.hostname==="127.0.0.1")){
-        setStatus("Camera needs HTTPS. Use GitHub Pages or localhost.");
-        return;
-      }
-
-      setStatus("Starting camera… allow permission.");
-      video.style.opacity = 0.18;
-
-      hands=new Hands({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-      });
-
-      hands.setOptions({
-        maxNumHands: 1,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.6,
-        minTrackingConfidence: 0.6
-      });
-
-      hands.onResults(onResults);
-
-      cam = new Camera(video, {
-        onFrame: async () => { await hands.send({image: video}); },
-        width: 1280, height: 720
+      cam = new Camera(videoEl, {
+        onFrame: async () => {
+          await hands.send({ image: videoEl });
+        },
+        width: 640,
+        height: 480
       });
 
       await cam.start();
-      setStatus("Camera running ✅ Show your hand.");
-      startBtn.style.display="none";
+      setStatus(`Camera running. Template: ${currentTemplate}`);
+      document.getElementById("stopBtn").disabled = false;
     }
 
-    startBtn.addEventListener("click", () => {
-      startCamera().catch(e=>{
-        console.error(e);
-        setStatus("Camera error: "+(e && e.message ? e.message : e));
-      });
-    });
-
-    // -------------------------
-    // Simulation
-    // -------------------------
-    let last=performance.now();
-    function animate(){
-      requestAnimationFrame(animate);
-      const now=performance.now();
-      const dt=Math.min(0.033, (now-last)/1000);
-      last=now;
-
-      updateColors(hue);
-
-      const kAttract=10.0;
-      const damping=0.86;
-
-      for(let i=0;i<N;i++){
-        const ix=i*3;
-
-        // template target scaled
-        const tx=target[ix+0]*expansion;
-        const ty=target[ix+1]*expansion;
-        const tz=target[ix+2]*expansion;
-
-        let px=positions[ix+0], py=positions[ix+1], pz=positions[ix+2];
-
-        // spring to template
-        let fx=(tx-px)*kAttract;
-        let fy=(ty-py)*kAttract;
-        let fz=(tz-pz)*kAttract;
-
-        // hand attractor
-        if(haveHand){
-          const dx=handWorld.x-px, dy=handWorld.y-py, dz=handWorld.z-pz;
-          const d=Math.sqrt(dx*dx+dy*dy+dz*dz)+1e-4;
-          const pull=1.4/(1.0+d*d*0.7);
-          fx+=dx*pull; fy+=dy*pull; fz+=dz*pull;
+    async function stopCamera() {
+      try {
+        if (cam) cam.stop();
+        const stream = videoEl.srcObject;
+        if (stream) {
+          for (const track of stream.getTracks()) track.stop();
         }
+        videoEl.srcObject = null;
+      } catch (e) {}
+      cam = null;
 
-        // integrate
-        vel[ix+0]=vel[ix+0]*damping + fx*dt;
-        vel[ix+1]=vel[ix+1]*damping + fy*dt;
-        vel[ix+2]=vel[ix+2]*damping + fz*dt;
-
-        positions[ix+0]=px + vel[ix+0]*dt;
-        positions[ix+1]=py + vel[ix+1]*dt;
-        positions[ix+2]=pz + vel[ix+2]*dt;
-      }
-
-      geom.attributes.position.needsUpdate=true;
-      scene.rotation.y += 0.002;
-
-      renderer.render(scene,camera3);
+      setStatus("Stopped.");
+      document.getElementById("startBtn").disabled = false;
+      document.getElementById("stopBtn").disabled = true;
     }
-    animate();
 
-    addEventListener("resize", ()=>{
-      camera3.aspect=innerWidth/innerHeight;
-      camera3.updateProjectionMatrix();
-      renderer.setSize(innerWidth,innerHeight);
-    });
+    document.getElementById("startBtn").addEventListener("click", startCamera);
+    document.getElementById("stopBtn").addEventListener("click", stopCamera);
+
+    // Start with default template display
+    setStatus(`Ready. Template: ${currentTemplate}`);
+    setDebug(`Gesture: (none)\nTemplate: ${currentTemplate}\nMappings: PALM→galaxy | FIST→fireworks | ONE→saturn | V→flower | ROCK→hearts | PINCH→spiral`);
   </script>
 </body>
 </html>
